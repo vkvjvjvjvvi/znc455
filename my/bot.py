@@ -21,17 +21,18 @@ spam_users = {}
 total_replies = 0
 paused = False
 user_message_counts = {}
+REPLY_COOLDOWN = 300  # فترة الكول داون الافتراضية (ثواني)
 
-# رد واحد رئيسي
-main_reply = "أهلاً بك، {name}! أنا بوت الرد التلقائي. كيف يمكنني مساعدتك؟"
+# قائمة للاستثناءات (معرفات المستخدمين)
+excluded_users = {6315517112, 6630823325}  # أضف معرفات المستخدمين التي ترغب في استثنائها
 
-# قائمة التحذيرات
-warning_replies = [
-    "يرجى عدم إرسال العديد من الرسائل بشكل متتالي.",
-    "الرجاء الانتظار قليلاً قبل إرسال المزيد من الرسائل.",
-    "أنا هنا لمساعدتك، لكن أرجو منك التخفيف قليلاً.",
-    "إذا كنت بحاجة للمساعدة، لا تتردد في طلب ذلك!"
+main_replies = [
+    "اهلا وسهلا عزيزي {name}، ابو يزن حاليا غير متوفر وانا الرد التلقائي 👾🤖",
+    "مرحبا {name}، ابو يزن مشغول حاليا، سأبلغه برسالتك لاحقا!",
+    "يا هلا {name}، ابو يزن حاليا بعيد عن الجهاز، انا بوت الرد الآلي!",
 ]
+
+warning_reply = "لا تلح هسه يجي ابو يزن ويرد عليك {name}."
 
 def log_message(message):
     with open("log.txt", "a", encoding="utf-8") as file:
@@ -47,8 +48,17 @@ async def auto_reply(event):
     sender = await event.get_sender()
     name = sender.first_name or "صديقي"
     now = time.time()
-    
-    # تتبع عدد الرسائل لما يستخدم كل مستخدم
+    last_reply_time = replied_users.get(sender.id, 0)
+
+    # حماية ضد السبام
+    if sender.id in spam_users and now - spam_users[sender.id] < 3600:
+        return  # تجاهل السبامر
+
+    # استثناء المستخدمين المحددين
+    if sender.id in excluded_users:
+        return  # تجاهل قيود الكول داون للمستثنين
+
+    # تتبع عدد الرسائل
     user_message_counts.setdefault(sender.id, [])
     user_message_counts[sender.id].append(now)
 
@@ -59,24 +69,24 @@ async def auto_reply(event):
     ]
 
     # إذا داز أكثر من 10 رسائل خلال دقيقة ➔ نوقفه
-    if len(user_message_counts[sender.id]) >= 25:
+    if len(user_message_counts[sender.id]) >= 200:
         spam_users[sender.id] = now
         log_message(f"[{time.ctime(now)}] سبام: {sender.id} تم حظره مؤقتاً ساعة.")
         print(f"مستخدم سبامر {sender.id} تم توقيفه مؤقتاً.")
         return
 
-    # الرد بعد أول رسالة
-    if len(user_message_counts[sender.id]) == 1:
-        await event.respond(main_reply.format(name=name))
-        replied_users[sender.id] = now  # تحديث زمن الرد
+    # الرد التلقائي العادي
+    if now - last_reply_time >= REPLY_COOLDOWN:
+        reply = random.choice(main_replies).format(name=name)
+        await event.respond(reply)
+        replied_users[sender.id] = now
         total_replies += 1
-        log_message(f"[{time.ctime(now)}] رد إلى {name} ({sender.id}): {main_reply.format(name=name)}")
+        log_message(f"[{time.ctime(now)}] رد أساسي إلى {name} ({sender.id}): {reply}")
         print(f"رد على {sender.id} | مجموع الردود: {total_replies}")
-        
-    # ردود تحذيرية بعد الرسالة الأولى
-    elif len(user_message_counts[sender.id]) % 3 == 0:  # بعد كل ثلاث رسائل
-        warning_reply = random.choice(warning_replies).format(name=name)
-        await event.respond(warning_reply)
+
+    # تحذير إذا داز أكثر من 3 رسائل خلال دقيقة
+    elif len(user_message_counts[sender.id]) == 3:
+        await event.respond(warning_reply.format(name=name))
         log_message(f"[{time.ctime(now)}] تحذير: {name} ({sender.id}) بسبب الحاحه.")
 
 @bot_client.on(events.NewMessage(pattern='/start'))
@@ -101,7 +111,8 @@ async def handle_status(event):
     await event.respond(f"حالة البوت: {status_text}\nعدد الردود الكلية: {total_replies}")
     log_message(f"[{time.ctime()}] استلم أمر /status.")
     print("تم طلب الحالة.")
-bot_client.on(events.NewMessage(pattern='/reset'))
+
+@bot_client.on(events.NewMessage(pattern='/reset'))
 async def handle_reset(event):
     global replied_users, spam_users, total_replies, user_message_counts
     replied_users = {}
@@ -112,6 +123,25 @@ async def handle_reset(event):
     log_message(f"[{time.ctime()}] استلم أمر /reset وتم تصفير العدادات.")
     print("تم تصفير العدادات.")
 
+@bot_client.on(events.NewMessage(pattern='/setcooldown'))
+async def handle_setcooldown(event):
+    cmd_parts = event.raw_text.split(' ')
+    if len(cmd_parts) != 2 or not cmd_parts[1].isdigit():
+        await event.respond("❌ استخدام صحيح: /setcooldown <الوقت بالثواني>\n"
+                            "يجب أن يكون الوقت بين 1 و 3600 ثانية.")
+        return
+    
+    cooldown = int(cmd_parts[1])
+    if cooldown < 1 or cooldown > 3600:
+        await event.respond("❌ يجب أن يكون الوقت بين 1 و 3600 ثانية.")
+        return
+    
+    global REPLY_COOLDOWN
+    REPLY_COOLDOWN = cooldown
+    await event.respond(f"⏳ تم تغيير الكول داون الى {cooldown} ثانية.")
+    log_message(f"[{time.ctime()}] تغيير الكول داون الى {cooldown} ثانية.")
+    print(f"تغيير الكول داون الى {cooldown} ثانية.")
+
 @bot_client.on(events.NewMessage(pattern='/help'))
 async def handle_help(event):
     help_text = (
@@ -120,6 +150,7 @@ async def handle_help(event):
         "- `/stop` - لإيقاف الردود التلقائية مؤقتًا.\n"
         "- `/status` - لمعرفة حالة البوت وعداد الردود الكلية.\n"
         "- `/reset` - لتصفير جميع البيانات.\n"
+        "- `/setcooldown <الوقت بالثواني>` - لتغيير فترة الكول داون.\n"
         "تجنب إرسال الكثير من الرسائل في وقت قصير حتى لا تُعتبر سبام."
     )
     await event.respond(help_text)
@@ -141,14 +172,13 @@ async def auto_reset():
         log_message(f"[{time.ctime()}] تم التصفير التلقائي اليومي.")
         print("✅ تم التصفير التلقائي بالليل.")
 
- #تشغيل الكل
 async def main():
     await user_client.start()
     await bot_client.start(bot_token=bot_token)
     print("✅ الحساب الشخصي اشتغل.")
     print("✅ البوت الرسمي اشتغل.")
 
-   #  تشغيل المهام مع بعض
+    
     await asyncio.gather(
         user_client.run_until_disconnected(),
         bot_client.run_until_disconnected(),
